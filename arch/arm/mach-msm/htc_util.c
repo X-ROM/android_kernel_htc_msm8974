@@ -666,9 +666,10 @@ void htc_monitor_init(void)
 	struct _htc_kernel_top *htc_kernel_top;
 	struct _htc_kernel_top *htc_kernel_top_accu;
 
-	if (get_kernel_flag() & KERNEL_FLAG_PM_MONITOR)
+	if ((get_kernel_flag() & KERNEL_FLAG_PM_MONITOR) ||
+		!(get_kernel_flag() & KERNEL_FLAG_TEST_PWR_SUPPLY)) {
 		pm_monitor_enabled = 1;
-	else
+	} else
 		pm_monitor_enabled = 0;
 
 	if (pm_monitor_enabled) {
@@ -702,7 +703,6 @@ void htc_monitor_init(void)
 						msecs_to_jiffies(msm_htc_util_delay_time));
 	}
 
-	
 	if (htc_kernel_top_monitor_wq == NULL) {
 		
 		htc_kernel_top_monitor_wq = create_workqueue("htc_kernel_top_monitor_wq");

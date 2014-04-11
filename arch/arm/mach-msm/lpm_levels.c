@@ -251,10 +251,8 @@ static void lpm_system_level_update(void)
 
 	if (num_powered_cores == 1)
 		allowed_l2_mode = MSM_SPM_L2_MODE_POWER_COLLAPSE;
-#if !defined(CONFIG_ARCH_MSM8974) 
 	else if (sys_state.allow_synched_levels)
 		allowed_l2_mode = MSM_SPM_L2_MODE_POWER_COLLAPSE;
-#endif
 	else
 		allowed_l2_mode = default_l2_mode;
 	max_l2_mode = min(allowed_l2_mode, sysfs_dbg_l2_mode);
@@ -868,7 +866,7 @@ static int lpm_cpu_probe(struct platform_device *pdev)
 	struct device_node *node = NULL;
 	int num_levels = 0;
 	char *key;
-	int ret;
+	int ret = 0;
 
 	for_each_child_of_node(pdev->dev.of_node, node)
 		num_levels++;
@@ -925,7 +923,7 @@ static int lpm_system_probe(struct platform_device *pdev)
 	int num_levels = 0;
 	struct device_node *node;
 	char *key;
-	int ret;
+	int ret = 0;
 
 	for_each_child_of_node(pdev->dev.of_node, node)
 		num_levels++;

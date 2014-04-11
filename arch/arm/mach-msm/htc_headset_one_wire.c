@@ -198,7 +198,7 @@ static int hs_1wire_query(int type)
 static int hs_1wire_open(void)
 {
 	int ret;
-	ret = cancel_delayed_work_sync(&onewire_closefile_work);
+	ret = __cancel_delayed_work(&onewire_closefile_work);
 	HS_LOG("[1-wire]hs_1wire_read_key");
 	if (!ret) {
 		HS_LOG("Cancel fileclose_work failed, ret = %d", ret);
@@ -432,13 +432,18 @@ static int htc_headset_1wire_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	dtinfo = kzalloc(sizeof(*dtinfo), GFP_KERNEL);
-	if (!dtinfo)
+	if (!dtinfo) {
+		kfree(hi);
 		return -ENOMEM;
+	}
 
 	if (pdev->dev.of_node) {
 		pdata = kzalloc(sizeof(*pdata), GFP_KERNEL);
-		if (pdata == NULL)
+		if (pdata == NULL) {
+			kfree(hi);
+			kfree(dtinfo);
 			return -ENOMEM;
+		}
 
 		dtinfo->dev = &pdev->dev;
 		dtinfo->pdata = pdata;
@@ -465,6 +470,9 @@ static int htc_headset_1wire_probe(struct platform_device *pdev)
 	onewire_wq = create_workqueue("ONEWIRE_WQ");
 	if (onewire_wq  == NULL) {
 		HS_ERR("Failed to create onewire workqueue");
+		kfree(hi);
+		kfree(pdata);
+		kfree(dtinfo);
 		return 0;
 	}
 	mutex_init(&hi->mutex_lock);
@@ -475,6 +483,8 @@ static int htc_headset_1wire_probe(struct platform_device *pdev)
 #endif
 	HS_LOG("--------------------");
 
+	kfree(dtinfo);
+	kfree(pdata);
 	return 0;
 }
 
