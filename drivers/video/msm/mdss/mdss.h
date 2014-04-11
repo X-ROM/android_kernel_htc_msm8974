@@ -89,6 +89,7 @@ struct mdss_data_type {
 	u8 has_wfd_blk;
 	u8 has_wb_ad;
 
+	u32 rotator_ot_limit;
 	u32 mdp_irq_mask;
 	u32 mdp_hist_irq_mask;
 
@@ -106,6 +107,9 @@ struct mdss_data_type {
 	u32 smp_mb_per_pipe;
 
 	u32 rot_block_size;
+
+	u32 max_bw_low;
+	u32 max_bw_high;
 
 	struct mdss_hw_settings *hw_settings;
 

@@ -22,7 +22,7 @@
 #define MSM_VDEC_DVC_NAME "msm_vdec_8974"
 #define MIN_NUM_OUTPUT_BUFFERS 4
 #define MAX_NUM_OUTPUT_BUFFERS 6
-#define DEFAULT_CONCEAL_COLOR 0x0
+#define DEFAULT_VIDEO_CONCEAL_COLOR_BLACK 0x8080
 
 #define TZ_INFO_GET_FEATURE_VERSION_ID 0x3
 #define TZ_DYNAMIC_BUFFER_FEATURE_ID 12
@@ -224,7 +224,7 @@ static struct msm_vidc_ctrl msm_vdec_ctrls[] = {
 		.name = "Extradata Type",
 		.type = V4L2_CTRL_TYPE_MENU,
 		.minimum = V4L2_MPEG_VIDC_EXTRADATA_NONE,
-		.maximum = V4L2_MPEG_VIDC_EXTRADATA_MPEG2_SEQDISP,
+		.maximum = V4L2_MPEG_VIDC_EXTRADATA_FRAME_BITS_INFO,
 		.default_value = V4L2_MPEG_VIDC_EXTRADATA_NONE,
 		.menu_skip_mask = ~(
 			(1 << V4L2_MPEG_VIDC_EXTRADATA_NONE) |
@@ -245,7 +245,9 @@ static struct msm_vidc_ctrl msm_vdec_ctrls[] = {
 			(1 << V4L2_MPEG_VIDC_INDEX_EXTRADATA_INPUT_CROP) |
 			(1 << V4L2_MPEG_VIDC_INDEX_EXTRADATA_DIGITAL_ZOOM) |
 			(1 << V4L2_MPEG_VIDC_INDEX_EXTRADATA_ASPECT_RATIO) |
-			(1 << V4L2_MPEG_VIDC_EXTRADATA_MPEG2_SEQDISP)
+			(1 << V4L2_MPEG_VIDC_EXTRADATA_MPEG2_SEQDISP) |
+			(1 << V4L2_MPEG_VIDC_EXTRADATA_FRAME_QP) |
+			(1 << V4L2_MPEG_VIDC_EXTRADATA_FRAME_BITS_INFO)
 			),
 		.qmenu = mpeg_video_vidc_extradata,
 		.step = 0,
@@ -321,6 +323,16 @@ static struct msm_vidc_ctrl msm_vdec_ctrls[] = {
 		.menu_skip_mask = 0,
 		.step = 1,
 		.qmenu = NULL,
+		.cluster = 0,
+	},
+	{
+		.id = V4L2_CID_MPEG_VIDC_VIDEO_CONCEAL_COLOR,
+		.name = "Picture concealed color",
+		.type = V4L2_CTRL_TYPE_INTEGER,
+		.minimum = 0x0,
+		.maximum = 0xffffff,
+		.default_value = DEFAULT_VIDEO_CONCEAL_COLOR_BLACK,
+		.step = 1,
 		.cluster = 0,
 	},
 };
@@ -609,12 +621,24 @@ int msm_vdec_release_buf(struct msm_vidc_inst *inst,
 					b->m.planes[extra_idx].m.userptr;
 			else
 				buffer_info.extradata_addr = 0;
-			buffer_info.response_required = false;
+			buffer_info.response_required = true;
+			init_completion(
+				&inst->completions[SESSION_MSG_INDEX
+				(SESSION_RELEASE_BUFFER_DONE)]);
 			rc = call_hfi_op(hdev, session_release_buffers,
 				(void *)inst->session, &buffer_info);
 			if (rc)
 				dprintk(VIDC_ERR,
 				"vidc_hal_session_release_buffers failed");
+			rc = wait_for_completion_timeout(
+				&inst->completions[SESSION_MSG_INDEX(SESSION_RELEASE_BUFFER_DONE)],
+				msecs_to_jiffies(msm_vidc_hw_rsp_timeout));
+			if (!rc) {
+				dprintk(VIDC_ERR, "Wait interrupted or timeout: %d\n", rc);
+				msm_comm_recover_from_session_error(inst);
+				rc = -EIO;
+			}
+
 		break;
 	default:
 		dprintk(VIDC_ERR, "Buffer type not recognized: %d\n", b->type);
@@ -693,11 +717,20 @@ int msm_vdec_g_fmt(struct msm_vidc_inst *inst, struct v4l2_format *f)
 	int rc = 0;
 	int i;
 	struct hal_buffer_requirements *buff_req_buffer;
+
 	if (!inst || !f || !inst->core || !inst->core->device) {
 		dprintk(VIDC_ERR,
 			"Invalid input, inst = %p, format = %p\n", inst, f);
 		return -EINVAL;
 	}
+
+	rc = msm_comm_try_get_bufreqs(inst);
+	if (rc) {
+		dprintk(VIDC_ERR, "Getting buffer requirements failed: %d\n",
+				rc);
+		return rc;
+	}
+
 	hdev = inst->core->device;
 	if (f->type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE)
 		fmt = inst->fmts[CAPTURE_PORT];
@@ -971,11 +1004,17 @@ int msm_vdec_s_fmt(struct msm_vidc_inst *inst, struct v4l2_format *f)
 			rc = -EINVAL;
 			goto err_invalid_fmt;
 		}
+		rc = msm_comm_try_state(inst, MSM_VIDC_CORE_INIT_DONE);
+		if (rc) {
+			dprintk(VIDC_ERR, "Failed to initialize instance\n");
+			goto err_invalid_fmt;
+		}
 		if (!(get_hal_codec_type(fmt->fourcc) &
 			inst->core->dec_codec_supported)) {
 			dprintk(VIDC_ERR,
-				"Codec(0x%x) not supported\n",
-				get_hal_codec_type(fmt->fourcc));
+				"Codec(0x%x) is not present in the supported codecs list(0x%x)\n",
+				get_hal_codec_type(fmt->fourcc),
+				inst->core->dec_codec_supported);
 			rc = -EINVAL;
 			goto err_invalid_fmt;
 		}
@@ -1319,7 +1358,6 @@ static int msm_vdec_start_streaming(struct vb2_queue *q, unsigned int count)
 {
 	struct msm_vidc_inst *inst;
 	int rc = 0;
-	int pdata = DEFAULT_CONCEAL_COLOR;
 	struct hfi_device *hdev;
 	if (!q || !q->drv_priv) {
 		dprintk(VIDC_ERR, "Invalid input, q = %p\n", q);
@@ -1337,10 +1375,6 @@ static int msm_vdec_start_streaming(struct vb2_queue *q, unsigned int count)
 	case V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE:
 		if (inst->bufq[CAPTURE_PORT].vb2_bufq.streaming)
 			rc = start_streaming(inst);
-		rc = call_hfi_op(hdev, session_set_property,
-			(void *) inst->session,
-			HAL_PARAM_VDEC_CONCEAL_COLOR,
-			(void *) &pdata);
 		break;
 	case V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE:
 		if (inst->bufq[OUTPUT_PORT].vb2_bufq.streaming)
@@ -1410,7 +1444,19 @@ int msm_vdec_cmd(struct msm_vidc_inst *inst, struct v4l2_decoder_cmd *dec)
 	}
 	switch (dec->cmd) {
 	case V4L2_DEC_QCOM_CMD_FLUSH:
+		if (core->state != VIDC_CORE_INVALID &&
+			inst->state ==  MSM_VIDC_CORE_INVALID) {
+			rc = msm_comm_recover_from_session_error(inst);
+			if (rc)
+				dprintk(VIDC_ERR,
+					"Failed to recover from session_error: %d\n",
+					rc);
+		}
 		rc = msm_comm_flush(inst, dec->flags);
+		if (rc) {
+			dprintk(VIDC_ERR,
+					"Failed to flush buffers: %d\n", rc);
+		}
 		break;
 	case V4L2_DEC_CMD_STOP:
 		if (core->state != VIDC_CORE_INVALID &&
@@ -1728,6 +1774,11 @@ static int try_set_ctrl(struct msm_vidc_inst *inst, struct v4l2_ctrl *ctrl)
 			rc = -ENOTSUPP;
 			break;
 		}
+		break;
+	case V4L2_CID_MPEG_VIDC_VIDEO_CONCEAL_COLOR:
+		property_id = HAL_PARAM_VDEC_CONCEAL_COLOR;
+		property_val = ctrl->val;
+		pdata = &property_val;
 		break;
 	default:
 		break;

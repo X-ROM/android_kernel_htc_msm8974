@@ -167,6 +167,7 @@ enum {
 
 #define MDSS_MDP_ROT_ONLY		0x80
 #define MDSS_MDP_RIGHT_MIXER		0x100
+#define MDSS_MDP_DUAL_PIPE		0x200
 
 #define MDP_ROT_NOP 0
 #define MDP_FLIP_LR 0x1
@@ -178,6 +179,7 @@ enum {
 #define MDP_BLUR 0x10
 #define MDP_BLEND_FG_PREMULT 0x20000
 #define MDP_IS_FG 0x40000
+#define MDP_SOLID_FILL 0x00001000
 #define MDP_DEINTERLACE 0x80000000
 #define MDP_SHARPENING  0x40000000
 #define MDP_NO_DMA_BARRIER_START	0x20000000
@@ -383,6 +385,32 @@ struct mdp_pa_cfg {
 	uint32_t cont_adj;
 };
 
+struct mdp_pa_mem_col_cfg {
+	uint32_t color_adjust_p0;
+	uint32_t color_adjust_p1;
+	uint32_t hue_region;
+	uint32_t sat_region;
+	uint32_t val_region;
+};
+
+#define MDP_SIX_ZONE_LUT_SIZE		384
+
+struct mdp_pa_v2_data {
+	
+	uint32_t flags;
+	uint32_t global_hue_adj;
+	uint32_t global_sat_adj;
+	uint32_t global_val_adj;
+	uint32_t global_cont_adj;
+	uint32_t six_zone_len;
+	uint32_t *six_zone_curve_p0;
+	uint32_t *six_zone_curve_p1;
+	uint32_t six_zone_thresh;
+	struct mdp_pa_mem_col_cfg skin_cfg;
+	struct mdp_pa_mem_col_cfg sky_cfg;
+	struct mdp_pa_mem_col_cfg fol_cfg;
+};
+
 struct mdp_igc_lut_data {
 	uint32_t block;
 	uint32_t len, ops;
@@ -424,6 +452,50 @@ enum mdss_mdp_blend_op {
 	BLEND_OP_MAX,
 };
 
+/**
+ * struct mdp_overlay - overlay surface structure
+ * @src:	Source image information (width, height, format).
+ * @src_rect:	Source crop rectangle, portion of image that will be fetched.
+ *		This should always be within boundaries of source image.
+ * @dst_rect:	Destination rectangle, the position and size of image on screen.
+ *		This should always be within panel boundaries.
+ * @z_order:	Blending stage to occupy in display, if multiple layers are
+ *		present, highest z_order usually means the top most visible
+ *		layer. The range acceptable is from 0-3 to support blending
+ *		up to 4 layers.
+ * @is_fg:	This flag is used to disable blending of any layers with z_order
+ *		less than this overlay. It means that any layers with z_order
+ *		less than this layer will not be blended and will be replaced
+ *		by the background border color.
+ * @alpha:	Used to set plane opacity. The range can be from 0-255, where
+ *		0 means completely transparent and 255 means fully opaque.
+ * @transp_mask: Color used as color key for transparency. Any pixel in fetched
+ *		image matching this color will be transparent when blending.
+ *		The color should be in same format as the source image format.
+ * @flags:	This is used to customize operation of overlay. See MDP flags
+ *		for more information.
+ * @user_data:	DEPRECATED* Used to store user application specific information.
+ * @bg_color:	Solid color used to fill the overlay surface when no source
+ *		buffer is provided.
+ * @horz_deci:	Horizontal decimation value, this indicates the amount of pixels
+ *		dropped for each pixel that is fetched from a line. The value
+ *		given should be power of two of decimation amount.
+ *		0: no decimation
+ *		1: decimate by 2 (drop 1 pixel for each pixel fetched)
+ *		2: decimate by 4 (drop 3 pixels for each pixel fetched)
+ *		3: decimate by 8 (drop 7 pixels for each pixel fetched)
+ *		4: decimate by 16 (drop 15 pixels for each pixel fetched)
+ * @vert_deci:	Vertical decimation value, this indicates the amount of lines
+ *		dropped for each line that is fetched from overlay. The value
+ *		given should be power of two of decimation amount.
+ *		0: no decimation
+ *		1: decimation by 2 (drop 1 line for each line fetched)
+ *		2: decimation by 4 (drop 3 lines for each line fetched)
+ *		3: decimation by 8 (drop 7 lines for each line fetched)
+ *		4: decimation by 16 (drop 15 lines for each line fetched)
+ * @overlay_pp_cfg: Overlay post processing configuration, for more information
+ *		see struct mdp_overlay_pp_params.
+ */
 struct mdp_overlay {
 	struct msmfb_img src;
 	struct mdp_rect src_rect;
@@ -435,7 +507,8 @@ struct mdp_overlay {
 	uint32_t transp_mask;
 	uint32_t flags;
 	uint32_t id;
-	uint32_t user_data[7];
+	uint32_t user_data[6];
+	uint32_t bg_color;
 	uint8_t horz_deci;
 	uint8_t vert_deci;
 	struct mdp_overlay_pp_params overlay_pp_cfg;
@@ -764,6 +837,7 @@ enum {
 	metadata_op_frame_rate,
 	metadata_op_vic,
 	metadata_op_wb_format,
+	metadata_op_wb_secure,
 	metadata_op_get_caps,
 	metadata_op_crc,
 	metadata_op_max
@@ -796,11 +870,13 @@ struct msmfb_metadata {
 		uint32_t panel_frame_rate;
 		uint32_t video_info_code;
 		struct mdss_hw_caps caps;
+		uint8_t secure_en;
 	} data;
 };
 
 #define MDP_MAX_FENCE_FD	32
 #define MDP_BUF_SYNC_FLAG_WAIT	1
+#define MDP_BUF_SYNC_FLAG_RETIRE_FENCE	0x10
 
 struct mdp_buf_sync {
 	uint32_t flags;
@@ -808,6 +884,7 @@ struct mdp_buf_sync {
 	uint32_t session_id;
 	int *acq_fen_fd;
 	int *rel_fen_fd;
+	int *retire_fen_fd;
 };
 
 struct mdp_async_blit_req_list {
@@ -817,19 +894,11 @@ struct mdp_async_blit_req_list {
 };
 
 #define MDP_DISPLAY_COMMIT_OVERLAY	1
-struct mdp_buf_fence {
-	uint32_t flags;
-	uint32_t acq_fen_fd_cnt;
-	int acq_fen_fd[MDP_MAX_FENCE_FD];
-	int rel_fen_fd[MDP_MAX_FENCE_FD];
-};
-
 
 struct mdp_display_commit {
 	uint32_t flags;
 	uint32_t wait_for_finish;
 	struct fb_var_screeninfo var;
-	struct mdp_buf_fence buf_fence;
 	struct mdp_rect roi;
 };
 

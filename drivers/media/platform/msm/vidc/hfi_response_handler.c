@@ -1,4 +1,4 @@
-/* Copyright (c) 2012-2013, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2012-2014, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -20,6 +20,9 @@
 #include "msm_vidc_debug.h"
 #include "vidc_hfi.h"
 
+#ifdef REDUCE_KERNEL_ERROR_LOG
+static int debug_kernel_count=0;
+#endif
 static enum vidc_status hfi_map_err_status(int hfi_err)
 {
 	enum vidc_status vidc_err;
@@ -243,8 +246,17 @@ static void hfi_process_event_notify(
 
 	switch (pkt->event_id) {
 	case HFI_EVENT_SYS_ERROR:
+#ifdef REDUCE_KERNEL_ERROR_LOG
+		if(debug_kernel_count<=10)
+		{
 		dprintk(VIDC_ERR, "HFI_EVENT_SYS_ERROR: %d, 0x%x\n",
 			pkt->event_data1, pkt->event_data2);
+		debug_kernel_count++;
+		}
+#else
+		dprintk(VIDC_ERR, "HFI_EVENT_SYS_ERROR: %d, 0x%x\n",
+			pkt->event_data1, pkt->event_data2);
+#endif
 		hfi_process_sys_error(callback, device_id);
 		break;
 	case HFI_EVENT_SESSION_ERROR:
@@ -282,7 +294,9 @@ static void hfi_process_sys_init_done(
 	u8 *data_ptr;
 	int prop_id;
 	enum vidc_status status = VIDC_ERR_NONE;
-
+#ifdef REDUCE_KERNEL_ERROR_LOG
+	debug_kernel_count=0;
+#endif
 	dprintk(VIDC_DBG, "RECEIVED:SYS_INIT_DONE");
 	if (sizeof(struct hfi_msg_sys_init_done_packet) > pkt->size) {
 		dprintk(VIDC_ERR, "hal_process_sys_init_done:bad_pkt_size: %d",
@@ -388,6 +402,10 @@ static inline void copy_cap_prop(
 		struct vidc_hal_session_init_done *sess_init_done)
 {
 	struct hal_capability_supported *out = NULL;
+	if (!in) {
+		dprintk(VIDC_ERR, "Invalid input for supported capabilties\n");
+		return;
+	}
 	switch (in->capability_type) {
 	case HFI_CAPABILITY_FRAME_WIDTH:
 		out = &sess_init_done->width;
@@ -420,9 +438,17 @@ static inline void copy_cap_prop(
 	case HFI_CAPABILITY_BITRATE:
 		out = &sess_init_done->bitrate;
 		break;
+
+	case HFI_CAPABILITY_ENC_LTR_COUNT:
+		out = &sess_init_done->ltr_count;
+		break;
+
+	case HFI_CAPABILITY_HIER_P_NUM_ENH_LAYERS:
+		out = &sess_init_done->hier_p;
+		break;
 	}
 
-	if (in && out) {
+	if (out) {
 		out->capability_type =
 			(enum hal_capability)in->capability_type;
 		out->min = in->min;
@@ -1040,7 +1066,9 @@ static void hfi_process_session_stop_done(
 		struct hfi_msg_session_stop_done_packet *pkt)
 {
 	struct msm_vidc_cb_cmd_done cmd_done;
-
+#ifdef REDUCE_KERNEL_ERROR_LOG
+	debug_kernel_count=0;
+#endif
 	dprintk(VIDC_DBG, "RECEIVED:SESSION_STOP_DONE");
 
 	if (!pkt || pkt->size !=

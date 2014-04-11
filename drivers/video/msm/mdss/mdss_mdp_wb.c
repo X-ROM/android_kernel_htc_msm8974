@@ -122,6 +122,34 @@ struct mdss_mdp_data *mdss_mdp_wb_debug_buffer(struct msm_fb_data_type *mfd)
 }
 #endif
 
+/*
+ * mdss_mdp_get_secure() - Queries the secure status of a writeback session
+ * @mfd:                   Frame buffer device structure
+ * @enabled:               Pointer to convey if session is secure
+ *
+ * This api enables an entity (userspace process, driver module, etc.) to
+ * query the secure status of a writeback session. The secure status is
+ * then supplied via a pointer.
+ */
+int mdss_mdp_wb_get_secure(struct msm_fb_data_type *mfd, uint8_t *enabled)
+{
+	struct mdss_mdp_wb *wb = mfd_to_wb(mfd);
+	if (!wb)
+		return -EINVAL;
+	*enabled = wb->is_secure;
+	return 0;
+}
+
+/*
+ * mdss_mdp_set_secure() - Updates the secure status of a writeback session
+ * @mfd:                   Frame buffer device structure
+ * @enable:                New secure status (1: secure, 0: non-secure)
+ *
+ * This api enables an entity to modify the secure status of a writeback
+ * session. If enable is 1, we allocate a secure pipe so that MDP is
+ * allowed to write back into the secure buffer. If enable is 0, we
+ * deallocate the secure pipe (if it was allocated previously).
+ */
 int mdss_mdp_wb_set_secure(struct msm_fb_data_type *mfd, int enable)
 {
 	struct mdss_mdp_wb *wb = mfd_to_wb(mfd);
@@ -130,6 +158,10 @@ int mdss_mdp_wb_set_secure(struct msm_fb_data_type *mfd, int enable)
 	struct mdss_mdp_mixer *mixer;
 
 	pr_debug("setting secure=%d\n", enable);
+	if ((enable != 1) && (enable != 0)) {
+		pr_err("Invalid enable value = %d\n", enable);
+		return -EINVAL;
+	}
 
 	if (!ctl || !ctl->mdata) {
 		pr_err("%s : ctl is NULL", __func__);
@@ -485,23 +517,13 @@ static int mdss_mdp_wb_dequeue(struct msm_fb_data_type *mfd,
 	return ret;
 }
 
-static void mdss_mdp_wb_callback(void *arg)
-{
-	if (arg)
-		complete((struct completion *) arg);
-}
-
 int mdss_mdp_wb_kickoff(struct msm_fb_data_type *mfd)
 {
 	struct mdss_mdp_wb *wb = mfd_to_wb(mfd);
 	struct mdss_mdp_ctl *ctl = mfd_to_ctl(mfd);
 	struct mdss_mdp_wb_data *node = NULL;
 	int ret = 0;
-	DECLARE_COMPLETION_ONSTACK(comp);
-	struct mdss_mdp_writeback_arg wb_args = {
-		.callback_fnc = mdss_mdp_wb_callback,
-		.priv_data = &comp,
-	};
+	struct mdss_mdp_writeback_arg wb_args = {0};
 
 	if (!ctl->power_on)
 		return 0;
@@ -533,6 +555,7 @@ int mdss_mdp_wb_kickoff(struct msm_fb_data_type *mfd)
 		pr_err("unable to get writeback buf ctl=%d\n", ctl->num);
 		
 		ret = 0;
+		mdss_mdp_ctl_notify(ctl, MDP_NOTIFY_FRAME_DONE);
 		goto kickoff_fail;
 	}
 
@@ -541,12 +564,6 @@ int mdss_mdp_wb_kickoff(struct msm_fb_data_type *mfd)
 		pr_err("error on commit ctl=%d\n", ctl->num);
 		goto kickoff_fail;
 	}
-
-	ret = wait_for_completion_timeout(&comp, KOFF_TIMEOUT);
-	if (ret == 0)
-		WARN(1, "wfd kick off time out=%d ctl=%d", ret, ctl->num);
-	else
-		ret = 0;
 
 	if (wb && node) {
 		mutex_lock(&wb->lock);
